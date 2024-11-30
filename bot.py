@@ -6,7 +6,7 @@ from loguru import logger
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
-PING_INTERVAL = 120
+PING_INTERVAL = 15
 RETRIES = 10
 
 DOMAIN_API = {
