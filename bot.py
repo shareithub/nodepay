@@ -61,12 +61,15 @@ scraper = cloudscraper.create_scraper(
 async def load_tokens():
     try:
         with open('Token.txt', 'r') as file:
-            tokens = file.read().splitlines()
+            # Membaca token, melewati baris yang kosong atau diawali dengan #
+            tokens = [
+                line.strip() for line in file.readlines()
+                if line.strip() and not line.strip().startswith("#")
+            ]
         return tokens
     except Exception as e:
         logger.error(f"Failed to load tokens: {e}")
         raise SystemExit("Exiting due to failure in loading tokens")
-
 
 async def call_api(url, data, account_info, proxy):
     headers = {
