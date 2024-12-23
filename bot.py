@@ -6,15 +6,14 @@ from loguru import logger
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
-PING_INTERVAL = 15
-RETRIES = 10
+PING_INTERVAL = 60
+RETRIES = 60
+MAX_PROXY_PER_TOKEN = 3  # Misalnya batas maksimum proxy per token
 
 DOMAIN_API = {
     "SESSION": "http://api.nodepay.ai/api/auth/session",
-    
     "PING": [
         "https://nw.nodepay.org/api/network/ping"
-    
     ]
 }
 
@@ -24,13 +23,13 @@ CONNECTION_STATES = {
     "NONE_CONNECTION": 3
 }
 
-BASE_PROXY = "CHANGE YOUR BASE PROXY"
+BASE_PROXY = "ONLY BASE PROXY"
 
 
 class AccountInfo:
     def __init__(self, token):
         self.token = token
-        self.proxies = [BASE_PROXY] * 3  # Each account uses the same proxy up to 3 times
+        self.proxies = [BASE_PROXY]  # Selalu gunakan BASE_PROXY
         self.status_connect = CONNECTION_STATES["NONE_CONNECTION"]
         self.account_data = {}
         self.retries = 0
@@ -48,7 +47,12 @@ class AccountInfo:
         self.account_data = {}
         self.retries = 3
 
+    def get_proxy(self):
+        """Mengambil proxy yang akan digunakan (selalu BASE_PROXY)"""
+        return self.proxies[0]  # Selalu gunakan proxy yang sama
 
+
+# Cloudscraper instance
 scraper = cloudscraper.create_scraper(
     browser={
         'browser': 'chrome',
@@ -57,19 +61,20 @@ scraper = cloudscraper.create_scraper(
     }
 )
 
-
 async def load_tokens():
     try:
         with open('Token.txt', 'r') as file:
-            # Membaca token, melewati baris yang kosong atau diawali dengan #
-            tokens = [
-                line.strip() for line in file.readlines()
-                if line.strip() and not line.strip().startswith("#")
-            ]
+            tokens = []
+            for line in file:
+                # Menghapus spasi di awal dan akhir, lalu memeriksa apakah baris bukan komentar
+                line = line.strip()
+                if line and not line.startswith('#'):  # Mengabaikan baris yang kosong atau diawali dengan '#'
+                    tokens.append(line)
         return tokens
     except Exception as e:
         logger.error(f"Failed to load tokens: {e}")
         raise SystemExit("Exiting due to failure in loading tokens")
+
 
 async def call_api(url, data, account_info, proxy):
     headers = {
@@ -77,15 +82,10 @@ async def call_api(url, data, account_info, proxy):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://app.nodepay.ai/",
-        "Accept": "application/json, text/plain, */*",
+        "Accept": "*/*",
         "Content-Type": "application/json",
         "Origin": "chrome-extension://lgmpfmgeabnnlemejacfljbmonaomfmm",
-        "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "cors-site"
+
     }
 
     proxy_config = {
@@ -148,12 +148,43 @@ async def ping(account_info, proxy):
                 "timestamp": int(time.time())
             }
             response = await call_api(url, data, account_info, proxy)
-            if response["code"] == 0:
-                logger.info(f"Ping successful for token {account_info.token} using proxy {proxy}")
-                return
+            
+            # Periksa apakah response adalah dictionary dan memiliki key 'code'
+            if isinstance(response, dict) and "code" in response:
+                if response["code"] == 0:
+                    logger.info(f"Ping successful for token {account_info.token} using proxy {proxy}")
+                    return
+                else:
+                    logger.error(f"Ping failed for token {account_info.token} with code {response.get('code')} using proxy {proxy}")
+            else:
+                logger.error(f"Unexpected response format for token {account_info.token} using proxy {proxy}: {response}")
+            
         except Exception as e:
             logger.error(f"Ping failed for token {account_info.token} using URL {url} and proxy {proxy}: {e}")
+            handle_ping_fail(account_info, e)
 
+
+def handle_ping_fail(account_info, response):
+    global RETRIES
+
+    RETRIES += 1
+
+    # Cek apakah response error dengan code 403 atau masalah lain
+    if isinstance(response, dict) and response.get("code") == 403:
+        handle_logout(account_info)
+    elif RETRIES < 2:
+        account_info.status_connect = CONNECTION_STATES["DISCONNECTED"]
+    else:
+        account_info.status_connect = CONNECTION_STATES["DISCONNECTED"]
+        logger.warning(f"Retry limit exceeded for account {account_info.token}, continuing with the same proxy.")
+
+
+def handle_logout(proxy):
+    global status_connect, account_info
+    status_connect = CONNECTION_STATES["NONE_CONNECTION"]
+    account_info = {}
+    save_status(proxy, None)
+    logger.error(f"Logged out and cleared session info for proxy {proxy}")
 
 def process_account(token):
     """
